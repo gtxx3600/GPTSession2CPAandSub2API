@@ -1159,11 +1159,11 @@
           const idAuth = getOpenAIAuthSection(idPayload);
           const profile = getOpenAIProfileSection(payload);
           const expiresAt = firstNonEmpty(
+            payload ? timestampFromUnixSeconds(payload.exp) : undefined,
             normalizeTimestamp(record.expires),
             normalizeTimestamp(record.expiresAt),
             normalizeTimestamp(record.expired),
             normalizeTimestamp(record.expires_at),
-            payload ? timestampFromUnixSeconds(payload.exp) : undefined,
           );
           const email = firstNonEmpty(
             record.user?.email,
@@ -1211,7 +1211,7 @@
           const expiresIn = getExpiresIn(expiresAt, options.now || new Date());
           const sourceName = firstNonEmpty(options.sourceName, "pasted-json");
           const sourceType = record.provider === "codex" && record.authType === "oauth" ? "9router" : "chatgpt_web_session";
-          const name = firstNonEmpty(record.name, email, sourceName, "ChatGPT Account");
+          const name = firstNonEmpty(email, sourceName, "ChatGPT Account");
           const syntheticIdToken = !inputIdToken
             ? buildSyntheticCodexIdToken(email, accountId, planType, userId, expiresAt)
             : undefined;
@@ -1288,7 +1288,7 @@
             id: accountId,
             provider: "codex",
             authType: "oauth",
-            name: firstNonEmpty(record.name, email, sourceName, "ChatGPT Account"),
+            name,
             email,
             priority,
             isActive,
