@@ -158,7 +158,7 @@
 
       .segmented {
         display: inline-grid;
-        grid-template-columns: repeat(3, minmax(0, 1fr));
+        grid-template-columns: repeat(4, minmax(0, 1fr));
         width: min(480px, 100%);
         padding: 4px;
         border: 1px solid var(--line);
@@ -626,6 +626,7 @@
             <span>CPA</span>
             <span>sub2api</span>
             <span>Cockpit</span>
+            <span>9router</span>
           </div>
         </div>
         <div class="meta-row" aria-label="处理方式">
@@ -652,6 +653,7 @@
           <button type="button" data-format="sub2api" aria-pressed="true">sub2api</button>
           <button type="button" data-format="cpa" aria-pressed="false">CPA</button>
           <button type="button" data-format="cockpit" aria-pressed="false">Cockpit</button>
+          <button type="button" data-format="9router" aria-pressed="false">9router</button>
         </div>
         <div class="actions">
           <button class="button button-secondary" id="copy-output" type="button" disabled>复制输出</button>
@@ -766,6 +768,7 @@
           sub2api: "sub2api",
           cpa: "CPA",
           cockpit: "Cockpit",
+          "9router": "9router",
         };
 
         const state = {
@@ -1061,9 +1064,22 @@
               }
               visited.add(item);
 
-              const token = firstNonEmpty(item.accessToken, item.access_token, item.token?.accessToken, item.credentials?.access_token);
-              const hasUser = isPlainObject(item.user) || firstNonEmpty(item.email, item.name);
-              if (token && hasUser) {
+              const token = firstNonEmpty(
+                item.accessToken,
+                item.access_token,
+                item.token?.accessToken,
+                item.token?.access_token,
+                item.credentials?.accessToken,
+                item.credentials?.access_token,
+              );
+              const hasIdentity = isPlainObject(item.user) || firstNonEmpty(
+                item.email,
+                item.name,
+                item.providerSpecificData?.chatgptAccountId,
+                item.providerSpecificData?.chatgpt_account_id,
+                item.id,
+              );
+              if (token && hasIdentity) {
                 found.push({ value: item, sourceName, path });
                 return;
               }
@@ -1108,6 +1124,8 @@
             record.accessToken,
             record.access_token,
             record.token?.accessToken,
+            record.token?.access_token,
+            record.credentials?.accessToken,
             record.credentials?.access_token,
           );
           if (!accessToken) {
@@ -1141,15 +1159,17 @@
           const idAuth = getOpenAIAuthSection(idPayload);
           const profile = getOpenAIProfileSection(payload);
           const expiresAt = firstNonEmpty(
-            payload ? timestampFromUnixSeconds(payload.exp) : undefined,
             normalizeTimestamp(record.expires),
+            normalizeTimestamp(record.expiresAt),
             normalizeTimestamp(record.expired),
             normalizeTimestamp(record.expires_at),
+            payload ? timestampFromUnixSeconds(payload.exp) : undefined,
           );
           const email = firstNonEmpty(
             record.user?.email,
             record.email,
             record.credentials?.email,
+            record.providerSpecificData?.email,
             profile.email,
             idPayload?.email,
             payload?.email,
@@ -1157,13 +1177,20 @@
           const accountId = firstNonEmpty(
             record.account?.id,
             record.account_id,
+            record.chatgptAccountId,
+            record.providerSpecificData?.chatgptAccountId,
+            record.providerSpecificData?.chatgpt_account_id,
             record.credentials?.chatgpt_account_id,
             auth.chatgpt_account_id,
             idAuth.chatgpt_account_id,
+            record.provider === "codex" ? record.id : undefined,
           );
           const userId = firstNonEmpty(
             record.user?.id,
             record.user_id,
+            record.chatgptUserId,
+            record.providerSpecificData?.chatgptUserId,
+            record.providerSpecificData?.chatgpt_user_id,
             auth.chatgpt_user_id,
             auth.user_id,
             idAuth.chatgpt_user_id,
@@ -1172,7 +1199,10 @@
           const planType = firstNonEmpty(
             record.account?.planType,
             record.account?.plan_type,
+            record.planType,
             record.plan_type,
+            record.providerSpecificData?.chatgptPlanType,
+            record.providerSpecificData?.chatgpt_plan_type,
             record.credentials?.plan_type,
             auth.chatgpt_plan_type,
             idAuth.chatgpt_plan_type,
@@ -1180,7 +1210,8 @@
           const exportedAt = normalizeTimestamp(options.now || new Date());
           const expiresIn = getExpiresIn(expiresAt, options.now || new Date());
           const sourceName = firstNonEmpty(options.sourceName, "pasted-json");
-          const name = firstNonEmpty(email, sourceName, "ChatGPT Account");
+          const sourceType = record.provider === "codex" && record.authType === "oauth" ? "9router" : "chatgpt_web_session";
+          const name = firstNonEmpty(record.name, email, sourceName, "ChatGPT Account");
           const syntheticIdToken = !inputIdToken
             ? buildSyntheticCodexIdToken(email, accountId, planType, userId, expiresAt)
             : undefined;
@@ -1236,9 +1267,33 @@
               email_key: toEmailKey(email),
               name,
               auth_provider: firstNonEmpty(record.authProvider, record.auth_provider),
-              source: "chatgpt_web_session",
+              source: sourceType,
               last_refresh: exportedAt,
             },
+          });
+          const priority = Number.isFinite(Number(record.priority)) ? Number(record.priority) : 9;
+          const isActive = typeof record.isActive === "boolean" ? record.isActive : !Boolean(record.disabled);
+          const createdAt = normalizeTimestamp(record.createdAt) || exportedAt;
+          const updatedAt = normalizeTimestamp(record.updatedAt) || exportedAt;
+          const nineRouter = stripUnavailable({
+            accessToken,
+            refreshToken,
+            expiresAt,
+            testStatus: firstNonEmpty(record.testStatus, record.test_status, "active"),
+            expiresIn,
+            providerSpecificData: {
+              chatgptAccountId: accountId,
+              chatgptPlanType: planType,
+            },
+            id: accountId,
+            provider: "codex",
+            authType: "oauth",
+            name: firstNonEmpty(record.name, email, sourceName, "ChatGPT Account"),
+            email,
+            priority,
+            isActive,
+            createdAt,
+            updatedAt,
           });
 
           return {
@@ -1249,6 +1304,7 @@
             expiresAt,
             cpa,
             cockpit,
+            nineRouter,
             sub2apiAccount,
           };
         }
@@ -1277,6 +1333,12 @@
             return state.converted.length === 1
               ? state.converted[0].cockpit
               : state.converted.map((item) => item.cockpit);
+          }
+
+          if (state.format === "9router") {
+            return state.converted.length === 1
+              ? state.converted[0].nineRouter
+              : state.converted.map((item) => item.nineRouter);
           }
 
           return buildSub2apiDocument(state.converted, now);
@@ -1340,7 +1402,7 @@
           elements.statErrors.textContent = String(state.skipped.length);
           elements.statFormat.textContent = OUTPUT_LABELS[state.format];
           elements.outputSubtitle.textContent = `当前输出为 ${OUTPUT_LABELS[state.format]} 导入 JSON。`;
-          elements.cpaNotice.style.display = state.format === "sub2api" ? "none" : "block";
+          elements.cpaNotice.style.display = state.format === "cpa" || state.format === "cockpit" ? "block" : "none";
 
           renderAccounts();
           renderIssues();
