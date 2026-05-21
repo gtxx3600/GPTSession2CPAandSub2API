@@ -1,4 +1,6 @@
 .DS_Store
+__pycache__/
+*.py[cod]
 
 # Local secrets and session exports
 .env
@@ -9,6 +11,11 @@ sessions*.json
 token*.json
 tokens*.json
 auth*.json
+*.cockpit.json
+*.cpa.json
+*.sub2api.json
+*.9router.json
+*.axonhub.json
 credentials*.json
 
 # Dependency/build output if the project grows later

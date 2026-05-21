@@ -59,3 +59,61 @@ docs/index.html
 ```
 
 所有解析和转换都在浏览器本地完成，不上传 token，不写入本地存储。
+
+## Python CLI / Python API
+
+如果不想打开网页，可以直接用 Python 包。它不需要浏览器、Node.js、数据库或网络请求，只使用 Python 标准库。
+
+### 环境
+
+```text
+Python >= 3.10
+```
+
+### CLI
+
+从文件生成 Cockpit JSON：
+
+```bash
+python -m gptsession_converter --format cockpit --input input.summary.json --output cockpit.json
+```
+
+从 stdin 生成 Cockpit JSON：
+
+```bash
+cat input.txt | python -m gptsession_converter --format cockpit > cockpit.json
+```
+
+支持的输入：
+
+- 普通 ChatGPT Web session JSON
+- 旧 `.summary.json` 这类外层包裹 JSON，只要内部能递归找到 `accessToken`
+- 包含 JSON 片段的 `.txt`
+- 简单 `key=value` / `key: value` 文本，例如 `accessToken=...`
+
+支持的输出格式：
+
+- `cockpit`
+- `cpa`
+- `sub2api`
+- `9router`
+- `axonhub`
+
+### Python 调用
+
+```python
+from gptsession_converter import convert_file, convert_text
+
+result = convert_file("input.summary.json", output_format="cockpit")
+cockpit_json = result.output
+
+result = convert_text(raw_text, output_format="cockpit")
+```
+
+安全边界：
+
+- 不联网
+- 不上传 token
+- 不写入本地存储
+- CLI 默认只把结果写到你指定的输出文件或 stdout
+- 示例里不要使用真实 token；真实 session JSON 等同敏感登录凭证

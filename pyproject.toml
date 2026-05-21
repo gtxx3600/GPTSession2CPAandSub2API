@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gptsession-converter"
+version = "0.1.0"
+description = "Convert ChatGPT Web session JSON into CPA, sub2api, Cockpit, 9router, or AxonHub JSON."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [{ name = "GPTSession2CPAandSub2API contributors" }]
+dependencies = []
+
+[project.scripts]
+gptsession-convert = "gptsession_converter.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["gptsession_converter*"]
