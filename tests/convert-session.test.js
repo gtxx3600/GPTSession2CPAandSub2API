@@ -56,6 +56,8 @@ function loadPageScript() {
 
   assert.ok(match, "expected docs/index.html to contain one inline script");
 
+  const blobUrls = new Map();
+  const downloads = [];
   const elements = new Map();
   const formatButtons = ["sub2api", "cpa", "cockpit", "9router", "codex", "axonhub", "codexmanager"].map((format) =>
     createFakeElement(`[data-format="${format}"]`, { dataset: { format } })
@@ -64,7 +66,16 @@ function loadPageScript() {
   const document = {
     body: createFakeElement("body"),
     createElement(selector) {
-      return createFakeElement(selector);
+      const element = createFakeElement(selector);
+      if (selector === "a") {
+        element.click = () => {
+          downloads.push({
+            download: element.download,
+            href: element.href,
+          });
+        };
+      }
+      return element;
     },
     execCommand() {
       return true;
@@ -84,12 +95,17 @@ function loadPageScript() {
     TextDecoder,
     TextEncoder,
     URL: {
-      createObjectURL() {
-        return "blob:test";
+      createObjectURL(blob) {
+        const href = `blob:test-${blobUrls.size + 1}`;
+        blobUrls.set(href, blob);
+        return href;
       },
-      revokeObjectURL() {},
+      revokeObjectURL(href) {
+        blobUrls.delete(href);
+      },
     },
     atob,
+    Blob,
     btoa,
     clearTimeout,
     console,
@@ -104,12 +120,12 @@ function loadPageScript() {
 
   vm.runInNewContext(match[1], context, { filename: "docs/index.html" });
 
-  return { elements, formatButtons };
+  return { blobUrls, downloads, elements, formatButtons };
 }
 
 function dispatch(element, type) {
   assert.equal(typeof element.listeners[type], "function", `missing ${type} listener on ${element.selector}`);
-  element.listeners[type]({ target: element });
+  return element.listeners[type]({ target: element });
 }
 
 function jwtWithPayload(payload) {
@@ -118,6 +134,39 @@ function jwtWithPayload(payload) {
     Buffer.from(JSON.stringify(payload)).toString("base64url"),
     "sig",
   ].join(".");
+}
+
+async function readStoredZipEntries(blob) {
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  const decoder = new TextDecoder();
+  const entries = [];
+  let offset = 0;
+
+  while (offset + 30 <= bytes.length) {
+    const view = new DataView(bytes.buffer, bytes.byteOffset + offset);
+    const signature = view.getUint32(0, true);
+    if (signature === 0x02014b50 || signature === 0x06054b50) {
+      break;
+    }
+
+    assert.equal(signature, 0x04034b50);
+    assert.equal(view.getUint16(8, true), 0);
+
+    const compressedSize = view.getUint32(18, true);
+    const fileNameLength = view.getUint16(26, true);
+    const extraLength = view.getUint16(28, true);
+    const fileNameStart = offset + 30;
+    const dataStart = fileNameStart + fileNameLength + extraLength;
+    const dataEnd = dataStart + compressedSize;
+
+    entries.push({
+      name: decoder.decode(bytes.slice(fileNameStart, fileNameStart + fileNameLength)),
+      content: decoder.decode(bytes.slice(dataStart, dataEnd)),
+    });
+    offset = dataEnd;
+  }
+
+  return entries;
 }
 
 function testSub2apiAccountUsesAccessTokenExpiry() {
@@ -409,13 +458,71 @@ function testCodexManagerAuthJsonPreservesRealRefreshAndMetadata() {
   assert.equal(authJson.meta.chatgpt_account_id, "chatgpt-account-1");
 }
 
-testSub2apiAccountUsesAccessTokenExpiry();
-testSub2apiAccountsUseTheirOwnAccessTokenExpiry();
-testSyntheticIdTokenHasCodexParseableJwtFormat();
-testAxonHubAuthJsonUsesPlaceholderRefreshTokenWhenMissing();
-testAxonHubAuthJsonPreservesRealRefreshToken();
-testCodexAuthJsonMatchesNativeShapeWhenMissingRefreshToken();
-testCodexAuthJsonPreservesRealRefreshTokenAndIdToken();
-testCodexManagerAuthJsonUsesEmptyRefreshTokenWhenMissing();
-testCodexManagerAuthJsonPreservesRealRefreshAndMetadata();
-console.log("convert-session tests passed");
+async function testBatchUploadDownloadsOneZipWithOneJsonPerSourceFile() {
+  const { blobUrls, downloads, elements } = loadPageScript();
+  const fileInput = elements.get("#file-input");
+  const downloadButton = elements.get("#download-output");
+
+  fileInput.files = [
+    {
+      name: "first.json",
+      async text() {
+        return JSON.stringify({
+          email: "first@example.com",
+          accessToken: jwtWithPayload({
+            exp: 1780473960,
+          }),
+        });
+      },
+    },
+    {
+      name: "second.json",
+      async text() {
+        return JSON.stringify({
+          email: "second@example.com",
+          accessToken: jwtWithPayload({
+            exp: 1780473960,
+          }),
+        });
+      },
+    },
+  ];
+
+  await dispatch(fileInput, "change");
+  dispatch(downloadButton, "click");
+
+  assert.equal(downloads.length, 1);
+  assert.match(downloads[0].download, /^chatgpt-session\.sub2api\.\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}\.zip$/);
+
+  const entries = await readStoredZipEntries(blobUrls.get(downloads[0].href));
+  assert.equal(entries.length, 2);
+  assert.match(entries[0].name, /^first\.sub2api\.\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}\.01\.json$/);
+  assert.match(entries[1].name, /^second\.sub2api\.\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}\.02\.json$/);
+
+  const firstDocument = JSON.parse(entries[0].content);
+  const secondDocument = JSON.parse(entries[1].content);
+
+  assert.equal(firstDocument.accounts.length, 1);
+  assert.equal(secondDocument.accounts.length, 1);
+  assert.equal(firstDocument.accounts[0].credentials.email, "first@example.com");
+  assert.equal(secondDocument.accounts[0].credentials.email, "second@example.com");
+}
+
+async function main() {
+  testSub2apiAccountUsesAccessTokenExpiry();
+  testSub2apiAccountsUseTheirOwnAccessTokenExpiry();
+  testSyntheticIdTokenHasCodexParseableJwtFormat();
+  testAxonHubAuthJsonUsesPlaceholderRefreshTokenWhenMissing();
+  testAxonHubAuthJsonPreservesRealRefreshToken();
+  testCodexAuthJsonMatchesNativeShapeWhenMissingRefreshToken();
+  testCodexAuthJsonPreservesRealRefreshTokenAndIdToken();
+  testCodexManagerAuthJsonUsesEmptyRefreshTokenWhenMissing();
+  testCodexManagerAuthJsonPreservesRealRefreshAndMetadata();
+  await testBatchUploadDownloadsOneZipWithOneJsonPerSourceFile();
+  console.log("convert-session tests passed");
+}
+
+main().catch((error) => {
+  console.error(error);
+  process.exitCode = 1;
+});

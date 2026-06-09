@@ -1071,6 +1071,101 @@
           ].join("-");
         }
 
+        const CRC32_TABLE = (() => {
+          const table = new Uint32Array(256);
+          for (let index = 0; index < table.length; index += 1) {
+            let value = index;
+            for (let bit = 0; bit < 8; bit += 1) {
+              value = (value & 1) ? (0xedb88320 ^ (value >>> 1)) : (value >>> 1);
+            }
+            table[index] = value >>> 0;
+          }
+          return table;
+        })();
+
+        function getCrc32(bytes) {
+          let crc = 0xffffffff;
+          bytes.forEach((byte) => {
+            crc = CRC32_TABLE[(crc ^ byte) & 0xff] ^ (crc >>> 8);
+          });
+          return (crc ^ 0xffffffff) >>> 0;
+        }
+
+        function getZipDosDateTime(date = new Date()) {
+          const year = Math.max(1980, date.getFullYear());
+          return {
+            time: (date.getHours() << 11) | (date.getMinutes() << 5) | Math.floor(date.getSeconds() / 2),
+            date: ((year - 1980) << 9) | ((date.getMonth() + 1) << 5) | date.getDate(),
+          };
+        }
+
+        function createStoredZipBlob(entries, date = new Date()) {
+          const encoder = new TextEncoder();
+          const chunks = [];
+          const centralDirectory = [];
+          const { time, date: dosDate } = getZipDosDateTime(date);
+          let offset = 0;
+
+          entries.forEach((entry) => {
+            const nameBytes = encoder.encode(entry.name);
+            const dataBytes = encoder.encode(entry.content);
+            const crc = getCrc32(dataBytes);
+
+            const localHeader = new Uint8Array(30 + nameBytes.length);
+            const localView = new DataView(localHeader.buffer);
+            localView.setUint32(0, 0x04034b50, true);
+            localView.setUint16(4, 20, true);
+            localView.setUint16(6, 0x0800, true);
+            localView.setUint16(8, 0, true);
+            localView.setUint16(10, time, true);
+            localView.setUint16(12, dosDate, true);
+            localView.setUint32(14, crc, true);
+            localView.setUint32(18, dataBytes.length, true);
+            localView.setUint32(22, dataBytes.length, true);
+            localView.setUint16(26, nameBytes.length, true);
+            localView.setUint16(28, 0, true);
+            localHeader.set(nameBytes, 30);
+
+            const centralHeader = new Uint8Array(46 + nameBytes.length);
+            const centralView = new DataView(centralHeader.buffer);
+            centralView.setUint32(0, 0x02014b50, true);
+            centralView.setUint16(4, 20, true);
+            centralView.setUint16(6, 20, true);
+            centralView.setUint16(8, 0x0800, true);
+            centralView.setUint16(10, 0, true);
+            centralView.setUint16(12, time, true);
+            centralView.setUint16(14, dosDate, true);
+            centralView.setUint32(16, crc, true);
+            centralView.setUint32(20, dataBytes.length, true);
+            centralView.setUint32(24, dataBytes.length, true);
+            centralView.setUint16(28, nameBytes.length, true);
+            centralView.setUint16(30, 0, true);
+            centralView.setUint16(32, 0, true);
+            centralView.setUint16(34, 0, true);
+            centralView.setUint16(36, 0, true);
+            centralView.setUint32(38, 0, true);
+            centralView.setUint32(42, offset, true);
+            centralHeader.set(nameBytes, 46);
+
+            chunks.push(localHeader, dataBytes);
+            centralDirectory.push(centralHeader);
+            offset += localHeader.length + dataBytes.length;
+          });
+
+          const centralDirectoryOffset = offset;
+          const centralDirectorySize = centralDirectory.reduce((size, chunk) => size + chunk.length, 0);
+          const endRecord = new Uint8Array(22);
+          const endView = new DataView(endRecord.buffer);
+          endView.setUint32(0, 0x06054b50, true);
+          endView.setUint16(8, entries.length, true);
+          endView.setUint16(10, entries.length, true);
+          endView.setUint32(12, centralDirectorySize, true);
+          endView.setUint32(16, centralDirectoryOffset, true);
+          endView.setUint16(20, 0, true);
+
+          return new Blob([...chunks, ...centralDirectory, endRecord], { type: "application/zip" });
+        }
+
         function formatDisplayDate(value) {
           if (!value) {
             return "";
@@ -1429,6 +1524,7 @@
           };
 
           return {
+            sourceKey: options.sourceKey,
             sourceName,
             sourcePath: options.sourcePath,
             email,
@@ -1453,49 +1549,48 @@
           };
         }
 
-        function buildOutputDocument() {
-          const now = new Date();
+        function buildOutputDocument(converted = state.converted, now = new Date()) {
           if (state.format === "sub2api") {
-            return buildSub2apiDocument(state.converted, now);
+            return buildSub2apiDocument(converted, now);
           }
 
           if (state.format === "cpa") {
-            return state.converted.length === 1
-              ? state.converted[0].cpa
-              : state.converted.map((item) => item.cpa);
+            return converted.length === 1
+              ? converted[0].cpa
+              : converted.map((item) => item.cpa);
           }
 
           if (state.format === "cockpit") {
-            return state.converted.length === 1
-              ? state.converted[0].cockpit
-              : state.converted.map((item) => item.cockpit);
+            return converted.length === 1
+              ? converted[0].cockpit
+              : converted.map((item) => item.cockpit);
           }
 
           if (state.format === "9router") {
-            return state.converted.length === 1
-              ? state.converted[0].nineRouter
-              : state.converted.map((item) => item.nineRouter);
+            return converted.length === 1
+              ? converted[0].nineRouter
+              : converted.map((item) => item.nineRouter);
           }
 
           if (state.format === "codex") {
-            return state.converted.length === 1
-              ? state.converted[0].codexAuthJson
-              : state.converted.map((item) => item.codexAuthJson);
+            return converted.length === 1
+              ? converted[0].codexAuthJson
+              : converted.map((item) => item.codexAuthJson);
           }
 
           if (state.format === "axonhub") {
-            return state.converted.length === 1
-              ? state.converted[0].axonHub
-              : state.converted.map((item) => item.axonHub);
+            return converted.length === 1
+              ? converted[0].axonHub
+              : converted.map((item) => item.axonHub);
           }
 
           if (state.format === "codexmanager") {
-            return state.converted.length === 1
-              ? state.converted[0].codexManager
-              : state.converted.map((item) => item.codexManager);
+            return converted.length === 1
+              ? converted[0].codexManager
+              : converted.map((item) => item.codexManager);
           }
 
-          return buildSub2apiDocument(state.converted, now);
+          return buildSub2apiDocument(converted, now);
         }
 
         function convertFromText(text) {
@@ -1508,6 +1603,7 @@
             try {
               converted.push(convertSession(item.value, {
                 now,
+                sourceKey: "pasted-json",
                 sourceName: item.sourceName,
                 sourcePath: item.path || `$[${index}]`,
               }));
@@ -1552,6 +1648,7 @@
           elements.output.value = outputText;
           elements.copyOutput.disabled = !outputText;
           elements.downloadOutput.disabled = !outputText;
+          elements.downloadOutput.textContent = getDownloadGroups().length > 1 ? "下载 ZIP" : "下载 JSON";
           elements.statCount.textContent = String(state.converted.length);
           elements.statErrors.textContent = String(state.skipped.length);
           elements.statFormat.textContent = OUTPUT_LABELS[state.format];
@@ -1628,15 +1725,35 @@
           }
         }
 
-        function downloadOutput() {
-          if (!state.outputText) {
-            return;
-          }
+        function getDownloadGroups() {
+          const groupMap = new Map();
 
-          const first = state.converted[0];
-          const base = sanitizeFileToken(first?.email || first?.name || state.format);
-          const fileName = `${base}.${state.format}.${getTimestampToken()}.json`;
-          const blob = new Blob([state.outputText], { type: "application/json;charset=utf-8" });
+          state.converted.forEach((item) => {
+            const key = firstNonEmpty(item.sourceKey, item.sourceName, "pasted-json");
+            if (!groupMap.has(key)) {
+              groupMap.set(key, {
+                sourceName: firstNonEmpty(item.sourceName, key, "pasted-json"),
+                converted: [],
+              });
+            }
+            groupMap.get(key).converted.push(item);
+          });
+
+          return Array.from(groupMap.values());
+        }
+
+        function buildDownloadItems(groups, timestamp, now = new Date()) {
+          return groups.map((group, index) => {
+            const first = group.converted[0];
+            const base = sanitizeFileToken(group.sourceName || first?.email || first?.name || state.format);
+            const suffix = groups.length > 1 ? `.${String(index + 1).padStart(2, "0")}` : "";
+            const fileName = `${base}.${state.format}.${timestamp}${suffix}.json`;
+            const jsonText = JSON.stringify(buildOutputDocument(group.converted, now), null, 2);
+            return { fileName, jsonText };
+          });
+        }
+
+        function triggerBlobDownload(fileName, blob) {
           const url = URL.createObjectURL(blob);
           const anchor = document.createElement("a");
           anchor.href = url;
@@ -1645,6 +1762,34 @@
           anchor.click();
           anchor.remove();
           setTimeout(() => URL.revokeObjectURL(url), 1000);
+        }
+
+        function triggerJsonDownload(fileName, jsonText) {
+          triggerBlobDownload(fileName, new Blob([jsonText], { type: "application/json;charset=utf-8" }));
+        }
+
+        function downloadOutput() {
+          if (!state.outputText) {
+            return;
+          }
+
+          const groups = getDownloadGroups();
+          const now = new Date();
+          const timestamp = getTimestampToken(now);
+          const items = buildDownloadItems(groups, timestamp, now);
+
+          if (items.length === 1) {
+            triggerJsonDownload(items[0].fileName, items[0].jsonText);
+            return;
+          }
+
+          const zipFileName = `chatgpt-session.${state.format}.${timestamp}.zip`;
+          const zipBlob = createStoredZipBlob(items.map((item) => ({
+            name: item.fileName,
+            content: item.jsonText,
+          })), now);
+          triggerBlobDownload(zipFileName, zipBlob);
+          setStatus(elements.outputStatus, `已开始下载 ZIP，包含 ${items.length} 个 JSON 文件。`, "ok");
         }
 
         async function copyOutput() {
@@ -1672,14 +1817,19 @@
           const documents = [];
           const skipped = [];
 
-          for (const file of jsonFiles) {
+          for (const [fileIndex, file] of jsonFiles.entries()) {
             try {
               const text = await file.text();
               const parsed = JSON.parse(text);
-              const found = collectSessionLikeObjects(parsed, file.webkitRelativePath || file.name);
+              const sourceName = file.webkitRelativePath || file.name;
+              const sourceKey = `${fileIndex}:${sourceName}`;
+              const found = collectSessionLikeObjects(parsed, sourceName).map((item) => ({
+                ...item,
+                sourceKey,
+              }));
               if (!found.length) {
                 skipped.push({
-                  sourceName: file.webkitRelativePath || file.name,
+                  sourceName,
                   path: "$",
                   reason: "未找到包含 accessToken 和 user/email 的 session 对象",
                 });
@@ -1701,6 +1851,7 @@
             try {
               converted.push(convertSession(item.value, {
                 now,
+                sourceKey: item.sourceKey,
                 sourceName: item.sourceName,
                 sourcePath: item.path,
               }));
@@ -1737,8 +1888,8 @@
         elements.copyOutput.addEventListener("click", copyOutput);
         elements.downloadOutput.addEventListener("click", downloadOutput);
         elements.pickFiles.addEventListener("click", () => elements.fileInput.click());
-        elements.fileInput.addEventListener("change", (event) => {
-          readFiles(event.target.files);
+        elements.fileInput.addEventListener("change", async (event) => {
+          await readFiles(event.target.files);
           event.target.value = "";
         });
 
